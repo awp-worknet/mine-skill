@@ -25,7 +25,11 @@ from common import (
     resolve_validator_id,
 )
 from evaluation_engine import EvaluationEngine, EvaluationResult
+import httpx
+from lib.platform_client import PlatformApiError
 from ws_client import ValidatorWSClient, WSDisconnected, WSMessage
+
+_HTTPStatusError = httpx.HTTPStatusError
 
 log = logging.getLogger("validator.runtime")
 
@@ -281,10 +285,9 @@ class ValidatorRuntime:
                 with self._lock:
                     self._running = False
                 return self.status()
-        except Exception as exc:
-            exc_str = str(exc)
-            # 403 = insufficient stake — validator requires minimum 10,000 AWP staked to this subnet
-            if "403" in exc_str or "permission" in exc_str.lower() or "forbidden" in exc_str.lower():
+        except (PlatformApiError, _HTTPStatusError) as err:
+            status = err.status_code if isinstance(err, PlatformApiError) else err.response.status_code
+            if status == 403:
                 log.error(
                     "Validator requires a minimum stake of 10,000 AWP allocated to this subnet. "
                     "Please use the AWP Skill to stake at least 10,000 AWP and assign it to this subnet, then retry."
@@ -293,6 +296,8 @@ class ValidatorRuntime:
                     self._running = False
                 return {**self.status(), "error": "insufficient_stake",
                         "message": "Validator requires minimum 10,000 AWP staked to this subnet. Use the AWP Skill to stake and allocate, then retry."}
+            log.warning("Validator application check failed: %s (proceeding anyway)", err)
+        except Exception as exc:
             log.warning("Validator application check failed: %s (proceeding anyway)", exc)
 
         try:
@@ -304,9 +309,9 @@ class ValidatorRuntime:
             with self._platform_lock:
                 self._platform.join_ready_pool()
             log.info("Joined validator ready pool")
-        except Exception as exc:
-            exc_str = str(exc)
-            if "403" in exc_str or "permission" in exc_str.lower() or "forbidden" in exc_str.lower():
+        except (PlatformApiError, _HTTPStatusError) as err:
+            status = err.status_code if isinstance(err, PlatformApiError) else err.response.status_code
+            if status == 403:
                 log.error(
                     "Failed to join validator ready pool — insufficient stake. "
                     "Validator requires minimum 10,000 AWP staked to this subnet. "
@@ -317,6 +322,8 @@ class ValidatorRuntime:
                 self._ws.close()
                 return {**self.status(), "error": "insufficient_stake",
                         "message": "Validator requires minimum 10,000 AWP staked to this subnet. Use the AWP Skill to stake and allocate, then retry."}
+            log.warning("join_ready_pool failed: %s", err)
+        except Exception as exc:
             log.warning("join_ready_pool failed: %s", exc)
 
         self._heartbeat_thread = threading.Thread(
@@ -443,10 +450,11 @@ class ValidatorRuntime:
                 self._inc_stat("tasks_received")
                 with self._lock:
                     eligible = self._eligible
+                    paused = self._paused
                 if not eligible:
                     log.info("Not eligible — ignoring evaluation_task %s", msg.assignment_id)
                     continue
-                if self._paused:
+                if paused:
                     log.info("Paused — ignoring evaluation_task %s", msg.assignment_id)
                     continue
                 try:
@@ -468,15 +476,14 @@ class ValidatorRuntime:
                 log.debug("Ignoring message type=%s", msg.type)
 
         log.info("Main loop exited")
-        with self._lock:
-            self._running = False
         self._write_status()
 
     def _poll_evaluation_task_http(self) -> None:
         """HTTP polling fallback when WS is unavailable."""
         with self._lock:
             eligible = self._eligible
-        if not eligible or self._paused:
+            paused = self._paused
+        if not eligible or paused:
             return
         try:
             with self._platform_lock:

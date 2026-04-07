@@ -347,12 +347,12 @@ class DatasetDiscoverySource:
                 continue
             for domain in _dataset_domains(dataset):
                 host = domain.strip().lower()
-                # arXiv: 用 API 直接获取最新论文 URL，跳过 HTML discovery
+                # arXiv: use API to get paper URLs directly, skip HTML listing discovery
                 if host == "arxiv.org" or host.endswith(".arxiv.org"):
                     paper_urls = _arxiv_recent_papers(count=10)
                     for url in paper_urls:
                         platform, resource_type, inferred_fields = infer_platform_task(url)
-                        record = {"url": url, "platform": platform, "resource_type": resource_type}
+                        record = {"canonical_url": url, "url": url, "platform": platform, "resource_type": resource_type}
                         record.update(inferred_fields)
                         items.append(
                             WorkItem(
@@ -367,8 +367,9 @@ class DatasetDiscoverySource:
                                 metadata={"dataset": dataset, "source_domain": domain},
                             )
                         )
-                    if paper_urls:
-                        continue
+                    # Always skip listing fallback for arXiv — listing pages fail on servers
+                    # and cause infinite retry loops. API is the only reliable source.
+                    continue
 
                 # Wikipedia: use MediaWiki Random API for direct article URLs
                 if host == "wikipedia.org" or host.endswith(".wikipedia.org"):
@@ -376,7 +377,7 @@ class DatasetDiscoverySource:
                     random_urls = _wikipedia_random_articles(wiki_host, count=10)
                     for url in random_urls:
                         platform, resource_type, inferred_fields = infer_platform_task(url)
-                        record = {"url": url, "platform": platform, "resource_type": resource_type}
+                        record = {"canonical_url": url, "url": url, "platform": platform, "resource_type": resource_type}
                         record.update(inferred_fields)
                         items.append(
                             WorkItem(
@@ -391,8 +392,8 @@ class DatasetDiscoverySource:
                                 metadata={"dataset": dataset, "source_domain": domain},
                             )
                         )
-                    if random_urls:
-                        continue
+                    # Always skip Main_Page fallback — same retry loop risk as arXiv listings
+                    continue
 
                 for seed_url in _discovery_seed_urls(domain):
                     platform, resource_type, _ = infer_platform_task(seed_url)
@@ -492,7 +493,7 @@ def _is_content_url(url: str) -> bool:
             return True
         return False
 
-    # arXiv: 只保留论文详情页，列表页仅在 discovery 阶段作为种子
+    # arXiv: only keep paper detail pages; listing pages are used as seeds during discovery only
     if host == "arxiv.org" or host.endswith(".arxiv.org"):
         return path.startswith("/abs/") or path.startswith("/pdf/")
 
@@ -501,6 +502,8 @@ def _is_content_url(url: str) -> bool:
 
 
 def build_follow_up_items_from_discovery(parent: WorkItem, records: list[dict[str, Any]]) -> list[WorkItem]:
+    if not parent.dataset_id:
+        return []  # no dataset_id → followups cannot be submitted, skip
     items: list[WorkItem] = []
     for record in records:
         canonical_url = optional_string(record.get("canonical_url"))
@@ -537,7 +540,7 @@ def _dataset_domains(dataset: dict[str, Any]) -> list[str]:
 
 
 def _arxiv_recent_papers(count: int = 10) -> list[str]:
-    """通过 arXiv API 获取最新论文的 /abs/ URL。"""
+    """Fetch the latest paper /abs/ URLs via the arXiv API."""
     import urllib.request
     import re as _re
 

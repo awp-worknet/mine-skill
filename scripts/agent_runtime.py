@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -690,6 +691,9 @@ class AgentWorker:
                 except SkipItemError as exc:
                     summary.skipped_items += 1
                     summary.messages.append(f"skipped {item.item_id}: {exc}")
+                    # Claimed tasks must be re-queued so they can be reported/rejected
+                    if item.claim_task_id:
+                        self.state_store.enqueue_backlog([_clone_item(item, resume=True)])
                     continue
                 except Exception as exc:
                     summary.errors.append(f"{item.item_id}: {exc}")
@@ -741,6 +745,8 @@ class AgentWorker:
                     if isinstance(result, SkipItemError):
                         summary.skipped_items += 1
                         summary.messages.append(f"skipped {item.item_id}: {result}")
+                        if item.claim_task_id:
+                            self.state_store.enqueue_backlog([_clone_item(item, resume=True)])
                     elif isinstance(result, Exception):
                         summary.errors.append(f"{item.item_id}: {result}")
                         retryable_item = _clone_item(item, resume=True)
@@ -798,6 +804,15 @@ class AgentWorker:
             summary.discovered_followups += len(followups)
             summary.processed_items += 1
             summary.messages.append(f"discovered {len(followups)} follow-up URLs from {item.url}")
+            # If discover-crawl produced no followups, cooldown the dataset to prevent
+            # immediate retry (covers both error cases and empty 200 OK responses)
+            if not followups and item.dataset_id:
+                self.state_store.mark_dataset_cooldown(
+                    item.dataset_id,
+                    retry_after_seconds=300,
+                    reason="discover-crawl produced no results",
+                )
+                summary.messages.append(f"dataset {item.dataset_id} cooled down 5min after failed discover-crawl")
             return
 
         if not result.records:
@@ -1432,13 +1447,16 @@ def _export_and_submit_core_submissions_for_task(
                         dedup_blocked.append(entry_url)
                 except Exception:
                     pass  # dedup check is best-effort, don't block submission on failure
-        if dedup_blocked and len(dedup_blocked) == len(entries):
-            import logging as _log
-            _log.getLogger("agent.submit").info(
-                "all entries blocked by dedup hash check: %s", dedup_blocked
+        if dedup_blocked:
+            logging.getLogger("agent.submit").info(
+                "dedup hash check blocked %d/%d entries: %s", len(dedup_blocked), len(entries), dedup_blocked
             )
-            response_path.write_text(json.dumps({"data": {"rejected": [{"url": u, "reason": "dedup_hash_conflict"} for u in dedup_blocked]}}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            return export_path, response_path
+            # Remove blocked entries from payload before submitting
+            blocked_set = set(dedup_blocked)
+            payload["entries"] = [e for e in entries if str(e.get("url") or "") not in blocked_set]
+            if not payload["entries"]:
+                response_path.write_text(json.dumps({"data": {"rejected": [{"url": u, "reason": "dedup_hash_conflict"} for u in dedup_blocked]}}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                return export_path, response_path
 
     response = client.submit_core_submissions(payload)
     # Handle PoW challenge: if admission_status is challenge_required, answer and retry
@@ -1510,8 +1528,9 @@ def _augment_submission_payload_for_dataset(
         if not isinstance(original_structured_data, dict):
             original_structured_data = {}
         schema_properties = schema.get("properties", {})
-        if not isinstance(schema_properties, dict):
-            schema_properties = {}
+        if not isinstance(schema_properties, dict) or not schema_properties:
+            # No schema properties available — keep original structured_data as-is
+            continue
         structured_data: dict[str, Any] = {
             field_name: original_structured_data[field_name]
             for field_name in schema_properties
