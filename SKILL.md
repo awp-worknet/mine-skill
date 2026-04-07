@@ -13,7 +13,7 @@ description: >
   `python scripts/run_tool.py` — never make direct HTTP calls (they require
   EIP-712 signatures and will always fail). Not for AWP wallet transfers,
   RootNet staking, smart contract deployment, or general server monitoring.
-version: 0.9.3
+version: 0.9.4
 bootstrap: ./scripts/bootstrap.sh
 windows_bootstrap: ./scripts/bootstrap.cmd
 smoke_test: ./scripts/smoke_test.py
@@ -275,6 +275,17 @@ If the error is `address_not_registered` or `registration_required`:
 
 **Do NOT** tell users to register on a website or manually call any registration API.
 The AWP Skill handles the entire on-chain registration flow automatically.
+
+If the validator returns `403`, `permission denied`, or `insufficient_stake`:
+
+1. **Validator requires a minimum stake of 10,000 AWP** allocated to this subnet
+2. Tell the user to **install and use the AWP Skill** to:
+   - Stake at least 10,000 AWP
+   - Allocate the stake to the ocDATA subnet
+3. After staking completes, retry `python scripts/run_tool.py validator-start`
+
+**Do NOT** suggest the user is "pending review" or needs manual approval when the
+error is 403 — it means insufficient stake, not a review issue.
 
 If you see `missing_auth_headers` or `signer_mismatch`, it means something
 bypassed `run_tool.py`. Stop and use the commands listed above instead.
