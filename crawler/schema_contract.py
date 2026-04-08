@@ -736,6 +736,15 @@ FIELD_RESOLVERS: dict[str, Resolver] = {
         record.get("employees_in_linkedin"),
         _structured(record).get("employees_in_linkedin"),
     ),
+    "text": lambda record: _first(
+        record.get("text"),
+        _structured(record).get("text"),
+        record.get("post_text"),
+        _structured(record).get("post_text"),
+        record.get("body"),
+        _structured(record).get("body"),
+        record.get("plain_text"),
+    ),
     "post_text": lambda record: _first(
         record.get("post_text"),
         _structured(record).get("post_text"),
@@ -937,10 +946,6 @@ FIELD_RESOLVERS: dict[str, Resolver] = {
         _structured(record).get("reviews_count"),
         record.get("review_count"),
         _structured(record).get("review_count"),
-    ),
-    "image_count": lambda record: _first(
-        record.get("image_count"),
-        _structured(record).get("image_count"),
     ),
     "coupon_available": lambda record: _first(
         record.get("coupon_available"),

@@ -296,17 +296,18 @@ class WebSocketClaimSource:
                 continue
             if msg.type == "repeat_crawl_task":
                 task_id = msg.repeat_crawl_task_id
-                if task_id:
-                    # ACK within 30s deadline
-                    try:
-                        self.ws_client.send_ack_repeat_crawl(task_id)
-                    except WSDisconnected as exc:
-                        # Connection lost — try best-effort reject, then let task expire on server
-                        log.warning("ACK failed for %s (connection lost): %s — task will return to pool after 30s", task_id, exc)
-                        continue
-                    with self._lock:
-                        self._queue.append(msg.data)
-                    log.info("Received repeat_crawl_task via WS: %s", task_id)
+                if not task_id:
+                    log.warning("WS received repeat_crawl_task with empty id, ignoring")
+                    continue
+                # ACK within 30s deadline
+                try:
+                    self.ws_client.send_ack_repeat_crawl(task_id)
+                except WSDisconnected as exc:
+                    log.warning("ACK failed for %s (connection lost): %s — task will return to pool after 30s", task_id, exc)
+                    continue
+                with self._lock:
+                    self._queue.append(msg.data)
+                log.info("Received repeat_crawl_task via WS: %s", task_id)
 
     def collect(self) -> list[WorkItem]:
         """Drain the internal queue and convert to WorkItems."""
