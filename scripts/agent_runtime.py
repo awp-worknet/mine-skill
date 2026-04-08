@@ -834,16 +834,19 @@ class AgentWorker:
                     report_result = self.client.report_refresh_task_result(item.claim_task_id, report_payload)
                 else:
                     summary.errors.append(f"unknown claim_task_type: {item.claim_task_type} for {item.claim_task_id}")
+                    return
             except PlatformApiError as api_exc:
                 if api_exc.code == "address_not_registered":
                     summary.errors.append("Wallet address not registered. Please install and use the AWP Skill to complete on-chain registration, then retry.")
                     return
                 summary.errors.append(f"report failed for {item.item_id}: {api_exc}")
+                return
             except httpx.HTTPStatusError as exc:
                 if self._maybe_handle_rate_limit(item, exc, summary, output_dir=result.output_dir):
                     return
                 summary.errors.append(f"HTTP error for {item.item_id}: {exc.response.status_code}")
                 self.state_store.enqueue_backlog([_clone_item(item, resume=True, output_dir=result.output_dir)])
+                return
 
         if item.dataset_id:
             try:
@@ -893,7 +896,8 @@ class AgentWorker:
                     summary.errors.append("Wallet address not registered. Please install and use the AWP Skill to complete on-chain registration, then retry.")
                     self.state_store.clear_submit_pending(item.item_id)
                 continue
-            except Exception:
+            except Exception as exc:
+                summary.errors.append(f"submit pending failed for {item.item_id}: {exc}")
                 continue
             self.state_store.clear_submit_pending(item.item_id)
             summary.submitted_items += 1
@@ -1476,6 +1480,10 @@ def _export_and_submit_core_submissions_for_task(
                     pass  # PoW answer or retry failed, keep original response
     # Re-derive resp_data in case PoW retry updated response
     resp_data = response.get("data") if isinstance(response, dict) else None
+    # If admission_status is still challenge_required after PoW attempt, raise so callers
+    # don't count this as a successful submission
+    if isinstance(resp_data, dict) and resp_data.get("admission_status") == "challenge_required":
+        raise RuntimeError(f"submission requires PoW challenge that could not be resolved for {item.item_id}")
     # Check for submission_too_frequent in per-entry rejections
     if isinstance(resp_data, dict):
         rejected = resp_data.get("rejected")
