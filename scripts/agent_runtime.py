@@ -850,6 +850,28 @@ class AgentWorker:
         if not result.records:
             for error in result.errors:
                 summary.errors.append(f"{item.item_id}: {error.get('error_code') or 'UNKNOWN'}")
+            # Report failure to server so it can reassign immediately
+            if item.claim_task_id and item.claim_task_type == "repeat_crawl":
+                fail_reason = "crawl_failed"
+                for error in result.errors:
+                    code = str(error.get("error_code") or "")
+                    if "CAPTCHA" in code:
+                        fail_reason = "captcha_detected"
+                        break
+                    elif "AUTH" in code:
+                        fail_reason = "auth_required"
+                        break
+                    elif "CONTENT_EMPTY" in code:
+                        fail_reason = "content_empty"
+                        break
+                try:
+                    self.client.report_repeat_crawl_task_result(
+                        item.claim_task_id,
+                        {"failed": True, "fail_reason": fail_reason},
+                    )
+                    summary.messages.append(f"repeat_crawl {item.claim_task_id} reported as failed ({fail_reason})")
+                except Exception as exc:
+                    summary.errors.append(f"report repeat_crawl failure failed: {exc}")
             return
 
         record = result.records[0]
