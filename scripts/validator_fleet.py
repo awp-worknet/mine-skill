@@ -242,8 +242,10 @@ class ValidatorInstance:
                 if isinstance(interval, (int, float)) and interval > 0:
                     self._min_task_interval = int(interval)
             except Exception as exc:
-                self.log.debug("Heartbeat failed: %s", exc)
+                self.log.warning("Heartbeat failed: %s", exc)
 
+            # Re-join ready pool if not in it. After 503/disconnect the
+            # platform may evict the validator, so we retry periodically.
             if not self._in_ready_pool:
                 self._try_join_ready_pool()
 
@@ -253,15 +255,23 @@ class ValidatorInstance:
         try:
             with self._platform_lock:
                 self._platform.join_ready_pool()
+            if not self._in_ready_pool:
+                self.log.info("Joined ready pool")
             self._in_ready_pool = True
-            self.log.info("Joined ready pool")
         except PlatformApiError as err:
-            if err.status_code == 403:
+            if err.status_code == 409:
+                # 409 = already in ready pool, not an error
+                self._in_ready_pool = True
+            elif err.status_code == 403:
                 self.log.error("Cannot join ready pool (403): insufficient stake?")
             else:
                 self.log.warning("join_ready_pool failed: %s", err)
         except Exception as exc:
-            self.log.warning("join_ready_pool failed: %s", exc)
+            status = getattr(getattr(exc, "response", None), "status_code", 0)
+            if status == 409:
+                self._in_ready_pool = True
+            else:
+                self.log.warning("join_ready_pool failed: %s", exc)
 
     # ── 主消息循环 ──
 
@@ -270,12 +280,16 @@ class ValidatorInstance:
         while not self._stop_event.is_set():
             # 重连
             if not self._ws.connected:
+                # WS 断连意味着平台可能已驱逐此 validator
+                self._in_ready_pool = False
                 try:
                     self._ws.reconnect_with_backoff()
                 except Exception:
                     pass
                 if self._ws.connected:
                     consecutive_ws_failures = 0
+                    # 重连后立即重新加入 ready pool
+                    self._try_join_ready_pool()
                 else:
                     consecutive_ws_failures += 1
                     if consecutive_ws_failures >= 3:

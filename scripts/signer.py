@@ -1,11 +1,15 @@
-"""EIP-712 signing via awp-wallet CLI subprocess."""
+"""EIP-712 signing via awp-wallet CLI subprocess.
+
+Since awp-wallet v1.4.0, the --token parameter is optional — plaintext
+wallets don't need session auth. This signer no longer manages session
+tokens; it calls awp-wallet directly without --token.
+"""
 
 from __future__ import annotations
 
 import json
 import os
 import secrets
-import subprocess
 import time
 from typing import Any
 from urllib.parse import urlsplit
@@ -14,8 +18,6 @@ from common import (
     DEFAULT_EIP712_CHAIN_ID,
     DEFAULT_EIP712_DOMAIN_NAME,
     DEFAULT_EIP712_VERIFYING_CONTRACT,
-    WALLET_SESSION_DURATION_SECONDS,
-    persist_wallet_session,
 )
 
 from eip712_primitives import (
@@ -28,18 +30,25 @@ from eip712_primitives import (
 
 
 class WalletSigner:
-    """Bridge to awp-wallet CLI for EIP-712 request signing."""
+    """Bridge to awp-wallet CLI for EIP-712 request signing.
+
+    awp-wallet v1.4.0+: --token is optional, signing works without session.
+    awp-wallet < v1.4.0: --token is required, falls back to token-based flow
+                         with auto-renew on expiry.
+    """
 
     def __init__(self, wallet_bin: str = "awp-wallet", session_token: str = "") -> None:
         self._bin = wallet_bin
         self._token = session_token
         self._signer_address: str | None = None
+        self._token_optional: bool | None = None  # lazy-detected
 
     @property
     def session_token(self) -> str:
         return self._token
 
     def _run(self, *args: str) -> dict[str, Any]:
+        import subprocess
         cmd = [self._bin, *args]
         env = os.environ.copy()
         if not env.get("HOME") and env.get("USERPROFILE"):
@@ -47,12 +56,6 @@ class WalletSigner:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env)
         if result.returncode != 0:
             stderr = result.stderr.strip()
-            if "Invalid or expired session token" in stderr:
-                raise RuntimeError(
-                    "The auto-managed wallet session expired or is invalid; rerun "
-                    "`awp-wallet unlock --duration 3600 --scope full` or rerun bootstrap before retrying. "
-                    f"awp-wallet stderr: {stderr}"
-                )
             raise RuntimeError(f"awp-wallet failed (exit {result.returncode}): {stderr}")
         return json.loads(result.stdout)
 
@@ -71,20 +74,64 @@ class WalletSigner:
             self._signer_address = addr
         return self._signer_address
 
+    def _is_token_optional(self) -> bool:
+        """Detect whether awp-wallet supports tokenless signing (v1.4.0+)."""
+        if self._token_optional is not None:
+            return self._token_optional
+        import re
+        import subprocess
+        try:
+            result = subprocess.run(
+                [self._bin, "--version"],
+                capture_output=True, text=True, timeout=10,
+            )
+            # Output may be "1.4.0", "v1.4.0", "awp-wallet 1.4.0", etc.
+            m = re.search(r"(\d+)\.(\d+)", result.stdout.strip())
+            if m:
+                major, minor = int(m.group(1)), int(m.group(2))
+                # v0.17.0+ and v1.4.0+ support optional token
+                self._token_optional = (major, minor) >= (1, 4) or (major == 0 and minor >= 17)
+            else:
+                self._token_optional = False
+        except Exception:
+            self._token_optional = False
+        return self._token_optional
+
     def sign_typed_data(self, typed_data: dict[str, Any]) -> str:
-        resp = self._run(
-            "sign-typed-data",
-            "--token",
-            self._token,
-            "--data",
-            json.dumps(typed_data, separators=(",", ":")),
-        )
+        """Sign EIP-712 typed data.
+
+        v1.4.0+: no --token needed.
+        < v1.4.0: uses --token with auto-renew on expiry.
+        """
+        data_json = json.dumps(typed_data, separators=(",", ":"))
+
+        if self._is_token_optional():
+            # v1.4.0+: 不需要 token
+            resp = self._run("sign-typed-data", "--data", data_json)
+        else:
+            # 旧版: 需要 --token，过期时自动续签
+            try:
+                resp = self._run(
+                    "sign-typed-data", "--token", self._token, "--data", data_json,
+                )
+            except RuntimeError as exc:
+                err_msg = str(exc).lower()
+                if "expired" not in err_msg and "invalid" not in err_msg:
+                    raise
+                self.renew_session()
+                resp = self._run(
+                    "sign-typed-data", "--token", self._token, "--data", data_json,
+                )
+
         sig = resp.get("signature", "")
         if not sig:
             raise RuntimeError("awp-wallet sign-typed-data returned empty signature")
         return sig
 
-    def renew_session(self, *, duration_seconds: int = WALLET_SESSION_DURATION_SECONDS) -> dict[str, int | str]:
+    def renew_session(self, *, duration_seconds: int = 86400) -> dict[str, int | str]:
+        """Renew wallet session. Kept for backward compat but no longer
+        required for signing since v1.4.0."""
+        from common import WALLET_SESSION_DURATION_SECONDS, persist_wallet_session
         issued_at = int(time.time())
         resp = self._run("unlock", "--duration", str(max(1, duration_seconds)), "--scope", "full")
         session_token = str(resp.get("sessionToken") or "").strip()
