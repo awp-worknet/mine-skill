@@ -210,6 +210,19 @@ class AgentWorker:
             self.state_store,
             retry_after_seconds=config.auth_retry_interval_seconds,
         )
+        # ── Submit queue: crawl threads produce, submit thread consumes ──
+        # Separating crawl (parallel) from submit (sequential) prevents
+        # multiple threads from hitting 429 simultaneously. The submit
+        # thread handles rate limiting with backoff.
+        import queue as _queue_mod
+        self._submit_queue: _queue_mod.Queue[tuple[WorkItem, dict[str, Any], dict[str, Any] | None] | None] = _queue_mod.Queue()
+        self._submit_thread: threading.Thread | None = None
+        self._submit_stop = threading.Event()
+        self._submit_stats_lock = threading.Lock()
+        self._submit_stats = {"submitted": 0, "deferred": 0, "discarded": 0}
+        self._submit_retries: dict[str, int] = {}  # item_id → retry count
+        self._MAX_SUBMIT_RETRIES = 5
+
         # Dedicated repeat_crawl processing thread — runs independently
         # from the main iteration loop so a slow discovery task can never
         # block a repeat_crawl with a 6-minute platform deadline.
@@ -284,6 +297,9 @@ class AgentWorker:
         # Start dedicated repeat_crawl processing thread
         self._start_repeat_crawl_thread()
 
+        # Start submit thread — sequential submission with rate limit backoff
+        self._start_submit_thread()
+
         session_update: dict[str, Any] = {
             "mining_state": "running",
             "selected_dataset_ids": requested_selected,
@@ -341,6 +357,7 @@ class AgentWorker:
         return self.check_status() | {"message": "Mining resumed.", "mining_state": session["mining_state"]}
 
     def stop(self) -> dict[str, Any]:
+        self._stop_submit_thread()
         self._stop_repeat_crawl_thread()
         if self.ws_source is not None:
             self.ws_source.stop()
@@ -617,6 +634,7 @@ class AgentWorker:
                 print(f"[worker] stopped after {iteration} iterations")
                 return f"stopped after {iteration} iterations"
 
+        self.stop()
         return f"completed {iteration} iterations"
 
     def run_worker(self, *, interval: int = 60, max_iterations: int = 1) -> dict[str, Any]:
@@ -681,6 +699,8 @@ class AgentWorker:
             log.info("iteration %d: sleeping %ds", iteration, wait)
             time.sleep(wait)
         log.info("worker finished: total_iterations=%d", iteration)
+        # Ensure daemon threads are stopped and pending items persisted.
+        self.stop()
         return {
             "completed_iterations": iteration,
             "iterations": iterations,
@@ -737,6 +757,177 @@ class AgentWorker:
                 if self._pool_join_failures <= 3:
                     summary.errors.append(f"join miner ready pool failed: {exc}")
         self._sync_wallet_refresh_state()
+
+    # ------------------------------------------------------------------
+    # Submit thread: sequential submission with rate limit backoff
+    # ------------------------------------------------------------------
+
+    def _start_submit_thread(self) -> None:
+        if self._submit_thread is not None and self._submit_thread.is_alive():
+            return
+        self._submit_stop.clear()
+        self._submit_thread = threading.Thread(
+            target=self._submit_loop, name="submit", daemon=True,
+        )
+        self._submit_thread.start()
+
+    def _stop_submit_thread(self) -> None:
+        self._submit_stop.set()
+        self._submit_queue.put(None)  # sentinel to unblock get()
+        if self._submit_thread is not None:
+            # Join timeout must exceed httpx client timeout (30s) so the
+            # in-flight network call can finish before we give up.
+            self._submit_thread.join(timeout=45)
+        # Persist any items still in the queue (not the in-flight one,
+        # which was already popped by the thread).
+        self._persist_remaining_queue()
+
+    def _persist_remaining_queue(self) -> None:
+        """Persist any items remaining in the submit queue to disk.
+
+        Called after the submit thread stops (or fails to stop) so items
+        survive across restarts. Safe to call from any thread.
+        """
+        log = logging.getLogger("agent.submit")
+        count = 0
+        while True:
+            try:
+                entry = self._submit_queue.get_nowait()
+            except Exception:
+                break
+            if entry is None:
+                continue
+            item, record, report_result = entry
+            self.state_store.enqueue_submit_pending(item, {"record": record, "report_result": report_result})
+            count += 1
+        if count:
+            log.info("Persisted %d remaining queue item(s) to submit_pending", count)
+
+    def _enqueue_submission(
+        self,
+        item: WorkItem,
+        record: dict[str, Any],
+        report_result: dict[str, Any] | None,
+    ) -> None:
+        """Put a crawled item into the submit queue. Auto-starts the thread."""
+        # Don't revive a stopped submit thread — persist directly instead.
+        if self._submit_stop.is_set():
+            self.state_store.enqueue_submit_pending(item, {"record": record, "report_result": report_result})
+            return
+        self._submit_queue.put((item, record, report_result))
+        if self._submit_thread is None or not self._submit_thread.is_alive():
+            self._start_submit_thread()
+
+    def _submit_loop(self) -> None:
+        """Sequential submission with rate limit backoff.
+
+        Takes items from the submit queue one at a time. On 429, backs off
+        for retry_after seconds before continuing. This prevents multiple
+        threads from hammering the platform simultaneously.
+        """
+        log = logging.getLogger("agent.submit")
+        log.info("Submit thread started")
+        while not self._submit_stop.is_set():
+            try:
+                entry = self._submit_queue.get(timeout=5)
+            except Exception:
+                continue
+            if entry is None:
+                break  # stop sentinel
+            item, record, report_result = entry
+            self._submit_single(item, record, report_result, log)
+        # Remaining queue items are persisted by _stop_submit_thread →
+        # _persist_remaining_queue after this thread exits.
+        log.info("Submit thread stopped")
+
+    def _submit_single(
+        self,
+        item: WorkItem,
+        record: dict[str, Any],
+        report_result: dict[str, Any] | None,
+        log: logging.Logger,
+    ) -> None:
+        """Submit one item to the platform. Handles 429 with backoff."""
+        if not item.dataset_id:
+            return
+        try:
+            export_path, _ = _export_and_submit_core_submissions_for_task(
+                self.client,
+                Path(item.output_dir) if item.output_dir else (self.runner.output_root / item.source / _safe_path_segment(item.item_id)),
+                record,
+                item,
+                report_result=report_result,
+            )
+            self.state_store.clear_submit_pending(item.item_id)
+            self._submit_retries.pop(item.item_id, None)
+            with self._submit_stats_lock:
+                self._submit_stats["submitted"] += 1
+            log.info("Submitted %s", item.item_id)
+        except PlatformApiError as api_exc:
+            if api_exc.code == "address_not_registered":
+                log.error("Wallet not registered — cannot submit")
+                self.state_store.clear_submit_pending(item.item_id)
+                return
+            if api_exc.code in ("dedup_hash_conflict", "dedup_hash_in_cooldown",
+                                "url_pattern_mismatch", "duplicate",
+                                "submission_not_found", "dataset_not_found"):
+                with self._submit_stats_lock:
+                    self._submit_stats["discarded"] += 1
+                self.state_store.clear_submit_pending(item.item_id)
+                log.info("Discarded %s: %s", item.item_id, api_exc.code)
+                return
+            # Unknown API error — defer
+            self.state_store.enqueue_submit_pending(item, {"record": record, "report_result": report_result})
+            with self._submit_stats_lock:
+                self._submit_stats["deferred"] += 1
+            log.warning("Deferred %s: %s", item.item_id, api_exc)
+        except httpx.HTTPStatusError as http_exc:
+            status = http_exc.response.status_code
+            if status == 429:
+                retry_after = _extract_retry_after_seconds(http_exc, default=60)
+                retries = self._submit_retries.get(item.item_id, 0) + 1
+                self._submit_retries[item.item_id] = retries
+                if retries > self._MAX_SUBMIT_RETRIES:
+                    # Give up after too many retries — persist to disk
+                    log.warning("429 Rate Limited — giving up on %s after %d retries", item.item_id, retries)
+                    self.state_store.enqueue_submit_pending(item, {"record": record, "report_result": report_result})
+                    with self._submit_stats_lock:
+                        self._submit_stats["deferred"] += 1
+                    self._submit_retries.pop(item.item_id, None)
+                    return
+                log.warning("429 Rate Limited — backing off %ds then retrying %s (attempt %d/%d)",
+                            retry_after, item.item_id, retries, self._MAX_SUBMIT_RETRIES)
+                if item.dataset_id:
+                    self.state_store.mark_dataset_cooldown(
+                        item.dataset_id,
+                        retry_after_seconds=retry_after,
+                        reason="429 Rate Limited",
+                    )
+                if self._submit_stop.wait(timeout=retry_after):
+                    self.state_store.enqueue_submit_pending(item, {"record": record, "report_result": report_result})
+                    return
+                self._submit_queue.put((item, record, report_result))
+                return
+            if 400 <= status < 500:
+                with self._submit_stats_lock:
+                    self._submit_stats["discarded"] += 1
+                self.state_store.clear_submit_pending(item.item_id)
+                log.info("Discarded %s: HTTP %d", item.item_id, status)
+                return
+            # 5xx — defer
+            self.state_store.enqueue_submit_pending(item, {"record": record, "report_result": report_result})
+            with self._submit_stats_lock:
+                self._submit_stats["deferred"] += 1
+            log.warning("Deferred %s: HTTP %d", item.item_id, status)
+        except Exception as exc:
+            self.state_store.enqueue_submit_pending(item, {"record": record, "report_result": report_result})
+            with self._submit_stats_lock:
+                self._submit_stats["deferred"] += 1
+            log.warning("Deferred %s: %s", item.item_id, exc)
+
+    def get_submit_stats(self) -> dict[str, int]:
+        with self._submit_stats_lock:
+            return dict(self._submit_stats)
 
     # ------------------------------------------------------------------
     # Dedicated repeat_crawl thread
@@ -895,7 +1086,12 @@ class AgentWorker:
                 if allowed is not None:
                     merged[allowed.item_id] = allowed
         filtered = list(merged.values())[: self.config.max_parallel]
-        # Single-pass counting (repeat_crawl count already added above)
+        # Final counts from the filtered set only. Reset pre-filter counts
+        # to avoid double-counting (they were set during collection above).
+        repeat_claimed = summary.claimed_items  # preserve repeat_crawl count
+        summary.discovery_items = 0
+        summary.resumed_items = 0
+        summary.claimed_items = repeat_claimed
         for item in filtered:
             if item.source == "dataset_discovery":
                 summary.discovery_items += 1
@@ -1085,42 +1281,30 @@ class AgentWorker:
             return
 
         if item.dataset_id:
-            try:
-                export_path, _response_path = _export_and_submit_core_submissions_for_task(
-                    self.client,
-                    result.output_dir,
-                    record,
-                    item,
-                    report_result=report_result,
-                )
-                self.state_store.clear_submit_pending(item.item_id)
-                summary.submitted_items += 1
-                summary.messages.append(f"processed {item.item_id} in {result.output_dir}; exported core submissions to {export_path}")
-            except Exception as exc:
-                if isinstance(exc, PlatformApiError):
-                    if exc.code == "address_not_registered":
-                        summary.errors.append("Wallet address not registered. Please install and use the AWP Skill to complete on-chain registration, then retry.")
-                        return
-                    # Non-retryable conflicts — discard, don't re-queue
-                    if exc.code in ("dedup_hash_conflict", "dedup_hash_in_cooldown", "url_pattern_mismatch",
-                                    "duplicate", "submission_not_found", "dataset_not_found"):
-                        summary.errors.append(f"submission rejected for {item.item_id}: {exc.code} — discarded")
-                        return
-                if isinstance(exc, httpx.HTTPStatusError):
-                    if self._maybe_handle_rate_limit(item, exc, summary, output_dir=result.output_dir):
-                        return
-                    # 4xx client errors (except 429) are not retryable — discard
-                    if 400 <= exc.response.status_code < 500:
-                        summary.errors.append(f"submission rejected for {item.item_id}: HTTP {exc.response.status_code} — discarded")
-                        return
-                # Only re-queue for transient errors (5xx, network, timeout)
-                self.state_store.enqueue_submit_pending(item, {"record": record, "report_result": report_result})
-                summary.errors.append(f"submit deferred for {item.item_id}: {exc}")
+            # Enqueue to the dedicated submit thread — submissions are
+            # sequential with rate limit backoff. Crawl threads keep working
+            # while the submit thread waits out 429 cooldowns.
+            # Ensure output_dir is set so the submit thread can find the files
+            if not item.output_dir:
+                item = _clone_item(item, resume=False, output_dir=result.output_dir)
+            self._enqueue_submission(item, record, report_result)
+            summary.messages.append(f"processed {item.item_id}, queued for submission")
         else:
             summary.messages.append(f"processed {item.item_id} in {result.output_dir}")
 
     def _drain_submit_pending(self, summary: WorkerIterationSummary) -> None:
-        for entry in self.state_store.load_submit_pending():
+        """Re-enqueue persisted submit_pending items to the submit thread.
+
+        Each item is cleared from the persistent store BEFORE enqueuing to
+        the submit thread. If the submission fails, the submit thread
+        re-persists it via enqueue_submit_pending. This prevents the same
+        item from being drained again on the next iteration (double submit).
+        """
+        pending = self.state_store.load_submit_pending()
+        if not pending:
+            return
+        count = 0
+        for entry in pending:
             item_payload = entry.get("item")
             payload = entry.get("payload")
             if not isinstance(item_payload, dict) or not isinstance(payload, dict):
@@ -1130,39 +1314,18 @@ class AgentWorker:
             report_result = payload.get("report_result")
             if not isinstance(record, dict):
                 continue
-            output_dir = Path(item.output_dir) if item.output_dir else (self.runner.output_root / item.source / _safe_path_segment(item.item_id))
-            try:
-                _export_and_submit_core_submissions_for_task(
-                    self.client,
-                    output_dir,
-                    record,
-                    item,
-                    report_result=report_result if isinstance(report_result, dict) else None,
-                )
-            except PlatformApiError as api_exc:
-                if api_exc.code == "address_not_registered":
-                    summary.errors.append("Wallet address not registered. Please install and use the AWP Skill to complete on-chain registration, then retry.")
-                    self.state_store.clear_submit_pending(item.item_id)
-                elif api_exc.code in ("dedup_hash_conflict", "dedup_hash_in_cooldown", "url_pattern_mismatch",
-                                      "duplicate", "submission_not_found", "dataset_not_found"):
-                    # Non-retryable — clear from pending queue
-                    summary.errors.append(f"submit pending rejected for {item.item_id}: {api_exc.code} — discarded")
-                    self.state_store.clear_submit_pending(item.item_id)
-                else:
-                    summary.errors.append(f"submit pending failed for {item.item_id}: {api_exc}")
-                continue
-            except httpx.HTTPStatusError as http_exc:
-                if 400 <= http_exc.response.status_code < 500 and http_exc.response.status_code != 429:
-                    summary.errors.append(f"submit pending rejected for {item.item_id}: HTTP {http_exc.response.status_code} — discarded")
-                    self.state_store.clear_submit_pending(item.item_id)
-                else:
-                    summary.errors.append(f"submit pending failed for {item.item_id}: {http_exc}")
-                continue
-            except Exception as exc:
-                summary.errors.append(f"submit pending failed for {item.item_id}: {exc}")
-                continue
+            # Clear first, then enqueue. If we crash between clear and enqueue,
+            # the item is lost — but this is the only way to prevent double
+            # submission (drain seeing the same item every iteration). The submit
+            # thread re-persists on failure, so the window is tiny.
             self.state_store.clear_submit_pending(item.item_id)
-            summary.submitted_items += 1
+            self._enqueue_submission(
+                item, record,
+                report_result if isinstance(report_result, dict) else None,
+            )
+            count += 1
+        if count:
+            summary.messages.append(f"re-enqueued {count} pending submission(s) to submit thread")
 
     def _process_single_item_for_test(self, item: WorkItem, writer: RunArtifactWriter) -> str:
         command = self.crawl_mode_planner.choose_command(item)
