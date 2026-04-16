@@ -153,13 +153,18 @@ class ValidatorRuntime:
             "recent_actions": self._recent_actions[-30:],
             "min_task_interval": min_interval,
         }
+        tmp = str(self._status_file) + f".tmp-{os.getpid()}-{threading.get_ident()}"
         try:
-            tmp = str(self._status_file) + ".tmp"
+            self._status_file.parent.mkdir(parents=True, exist_ok=True)
             with open(tmp, "w") as f:
                 json.dump(status, f, indent=2)
             os.replace(tmp, str(self._status_file))
         except OSError as e:
             log.warning("Failed to write status file: %s", e)
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
     def _restore_stats(self) -> None:
         """Restore stats from previous run so counters survive restarts."""
@@ -616,12 +621,12 @@ class ValidatorRuntime:
 
         Per API spec, the complete flow is:
           1. WS push: {"type":"evaluation_task","data":{"task_id":"evt_xxx"}} (task_id only)
-          2. WS ack: {"ack_eval":"evt_xxx"} (triggers claim on server side)
-          3. HTTP POST /evaluation-tasks/claim → returns assignment_id + full data
-          4. Evaluate
-          5. HTTP POST /evaluation-tasks/{id}/report with assignment_id
+          2. HTTP POST /evaluation-tasks/claim → returns assignment_id + full data
+          3. Evaluate
+          4. HTTP POST /evaluation-tasks/{id}/report with assignment_id
 
         The assignment_id comes from the claim response, NOT from WS push.
+        WS ack_eval is no longer required — claim via HTTP is sufficient.
 
         HTTP polling flow (WS unavailable):
           1. HTTP POST /evaluation-tasks/claim → directly returns full data
@@ -629,11 +634,7 @@ class ValidatorRuntime:
         """
         task_id = msg.task_id
 
-        # Step 1: ACK via WS (triggers claim on server)
-        if not via_http:
-            self._ws.send_ack_eval(task_id)
-
-        # Step 2: HTTP POST /evaluation-tasks/claim to get assignment_id + full data.
+        # HTTP POST /evaluation-tasks/claim to get assignment_id + full data.
         # WS push only carries task_id. The claim response is the authoritative
         # source for assignment_id (REQUIRED in report) and all evaluation data.
         if via_http:
