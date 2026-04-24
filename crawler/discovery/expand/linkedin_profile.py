@@ -9,7 +9,8 @@ them into buckets (company, post, profile, etc.), and returns an
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any, Awaitable, Callable
+from typing import Awaitable, Callable
+
 from urllib.parse import unquote, urlparse
 
 from crawler.discovery.expand.base import ExpandResult

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping
-from urllib.parse import parse_qs, urlparse
+from typing import Any, Callable
+
+from urllib.parse import urlparse
+
 
 from crawler.contracts import NormalizedError
 from crawler.extract.html_extract import extract_html_document

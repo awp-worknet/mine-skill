@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from pathlib import Path
 
@@ -18,7 +17,8 @@ from crawler.core.auth import (
 )
 from crawler.enrich.input_normalizer import build_enrich_input
 from crawler.fetch.error_classifier import FetchError
-from crawler.output import read_json_file, read_jsonl_file
+from crawler.output import read_jsonl_file
+
 
 if TYPE_CHECKING:
     from crawler.discovery.contracts import DiscoveryCandidate, DiscoveryRecord
@@ -42,7 +42,9 @@ def _run_discovery_crawl_pipeline(config: CrawlerConfig) -> tuple[list[dict], li
 async def _run_discovery_crawl_pipeline_async(config: CrawlerConfig) -> tuple[list[dict], list[dict]]:
     """Async implementation of discovery crawl pipeline."""
     from crawler.discovery.adapters.registry import get_discovery_adapter
-    from crawler.discovery.contracts import CrawlOptions, DiscoveryCandidate, DiscoveryMode, DiscoveryRecord
+    from crawler.discovery.contracts import CrawlOptions, DiscoveryCandidate
+
+
     from crawler.discovery.runner import run_discover_crawl
     from crawler.fetch.engine import FetchEngine
     from crawler.fetch.session_store import SessionStore
@@ -216,7 +218,6 @@ async def _run_new_pipeline_async(config: CrawlerConfig) -> tuple[list[dict], li
     from crawler.discovery.url_builder import build_seed_records
     from crawler.platforms.registry import get_platform_adapter
     from crawler.normalize.canonical import build_canonical_record
-    from crawler.output.artifact_writer import write_artifact_bytes, write_artifact_json, write_artifact_text
     from crawler.schema_runtime.model_config import load_model_config
 
     logger = logging.getLogger(__name__)

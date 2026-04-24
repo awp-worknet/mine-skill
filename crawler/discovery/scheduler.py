@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from crawler.discovery.state.frontier import FrontierEntry, FrontierStatus
+from crawler.discovery.state.frontier import FrontierEntry
+
 from crawler.discovery.state.occupancy import OccupancyLease
 from crawler.discovery.store.frontier_store import InMemoryFrontierStore
 from crawler.discovery.store.occupancy_store import InMemoryOccupancyStore

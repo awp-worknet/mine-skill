@@ -17,7 +17,8 @@ import httpx
 from bs4 import Tag
 from markdownify import markdownify as to_markdown
 
-from .chunking.hybrid_chunker import HybridChunker, _estimate_tokens
+from .chunking.hybrid_chunker import HybridChunker
+
 from .crawl4ai_extract import extract_html_with_crawl4ai
 from .pre_llm_optimizer import optimize_for_llm
 from .trafilatura_extract import extract_with_trafilatura
