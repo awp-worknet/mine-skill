@@ -437,7 +437,7 @@ class ValidatorFleet:
         print(f"\n{'='*60}")
         print(f"  Validator Fleet - {self.count} instances")
         print(f"  Platform: {resolve_platform_base_url()}")
-        print(f"  Scoring: random 70-90 (no LLM)")
+        print("  Scoring: random 70-90 (no LLM)")
         print(f"{'='*60}")
         for i, key in enumerate(keys):
             print(f"  [{i}] {key['address']}")

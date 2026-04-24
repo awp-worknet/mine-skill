@@ -429,7 +429,7 @@ def render_control_response(payload: dict[str, Any]) -> str:
     if isinstance(reward, dict) and reward.get("pending") is not None:
         lines.append(f"{SYM_BULLET} Pending rewards: {reward.get('pending')}")
     lines.append("")
-    lines.append(f"Say 'pause', 'resume', or 'stop' to control mining.")
+    lines.append("Say 'pause', 'resume', or 'stop' to control mining.")
     return "\n".join(lines)
 
 
@@ -1034,7 +1034,6 @@ def render_intent_help() -> str:
 
 def render_confirmation_prompt(intent_id: str, action: dict[str, Any]) -> str:
     """Render confirmation prompt for actions that need it."""
-    name = action.get("name", "unknown")
     desc = action.get("description", "")
 
     if intent_id == "A3":

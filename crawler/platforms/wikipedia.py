@@ -539,7 +539,6 @@ def _extract_wikipedia(record: dict, fetched: dict) -> dict:
     fullurl = page.get("fullurl") or fetched.get("url") or ""
     wiki_host = _extract_wiki_host(fullurl)
     extlinks = [item.get("*", "").strip() for item in page.get("extlinks", []) if item.get("*", "").strip()]
-    linked_titles = [item.get("title", "").strip() for item in page.get("links", []) if item.get("title", "").strip()]
     image_titles = [item.get("title", "").strip() for item in page.get("images", []) if item.get("title", "").strip()]
     image_urls = [
         f"https://{wiki_host}/wiki/Special:FilePath/{quote(image.removeprefix('File:'), safe=':/()_-')}"
