@@ -207,7 +207,7 @@ def hook_normalizer(hook_name: str) -> Callable[[dict[str, Any], dict[str, Any],
             page_id = metadata.get("page_id") or structured.get("page_id")
             result = {
                 "title": metadata.get("title") or record.get("title"),
-                "summary": extracted.get("plain_text", "").splitlines()[0] if extracted.get("plain_text") else "",
+                "summary": (extracted.get("plain_text", "").splitlines() or [""])[0],
                 "URL": canonical_url,
                 "canonical_url": canonical_url,
                 "raw_text": extracted.get("plain_text"),
@@ -263,7 +263,8 @@ def hook_normalizer(hook_name: str) -> Callable[[dict[str, Any], dict[str, Any],
             structured = extracted.get("structured", {})
             abstract = metadata.get("description") or structured.get("abstract_plain_text") or ""
             if not abstract and extracted.get("plain_text"):
-                abstract = extracted.get("plain_text", "").splitlines()[0]
+                lines = extracted.get("plain_text", "").splitlines()
+                abstract = lines[0] if lines else ""
             arxiv_id = discovered["fields"].get("arxiv_id")
             result = {
                 "arxiv_id": arxiv_id,
