@@ -1342,7 +1342,6 @@ def run_agent_loop(max_iterations: int = 1) -> str:
 
     # Step 1: Check prerequisites
     platform_url = resolve_platform_base_url()
-    miner_id = resolve_miner_id()
     wallet_token = os.environ.get("AWP_WALLET_TOKEN", "").strip()
     wallet_bin = resolve_wallet_bin()
 
@@ -1727,7 +1726,6 @@ def run_validator_doctor() -> str:
     )
 
     snapshot = _validator_background_snapshot()
-    state_root = _validator_state_root()
     readiness = resolve_validator_readiness(auto_install_deps=False)
 
     checks: list[dict[str, object]] = []
