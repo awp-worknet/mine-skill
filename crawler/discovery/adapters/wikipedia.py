@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 from typing import Any
-from urllib.parse import unquote, urljoin, urlparse
+from urllib.parse import unquote, urlparse
+
 
 from bs4 import BeautifulSoup
 

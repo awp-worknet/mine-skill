@@ -131,7 +131,8 @@ class WalletSigner:
     def renew_session(self, *, duration_seconds: int = 86400) -> dict[str, int | str]:
         """Renew wallet session. Kept for backward compat but no longer
         required for signing since v1.4.0."""
-        from common import WALLET_SESSION_DURATION_SECONDS, persist_wallet_session
+        from common import persist_wallet_session
+
         issued_at = int(time.time())
         resp = self._run("unlock", "--duration", str(max(1, duration_seconds)), "--scope", "full")
         session_token = str(resp.get("sessionToken") or "").strip()
