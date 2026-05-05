@@ -227,7 +227,7 @@ def discover_from_html(
         if p.scheme not in ("http", "https"):
             continue
 
-        no_frag = full.split("#", 1)[0]
+        no_frag = full.split("#", 1)[0].rstrip("/\\")
         if no_frag not in seen:
             seen.add(no_frag)
             out.append(no_frag)
@@ -251,7 +251,7 @@ def discover_from_html_deep(
     embedded: list[str] = []
     for m in _RE_ANY_LINKEDIN_URL.finditer(html):
         raw = m.group(0).rstrip(".,;]")
-        cleaned = raw.split("#", 1)[0].strip()
+        cleaned = raw.split("#", 1)[0].strip().rstrip("/\\")
         if cleaned:
             embedded.append(cleaned)
 

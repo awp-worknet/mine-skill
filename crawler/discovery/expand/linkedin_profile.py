@@ -196,7 +196,7 @@ async def expand_profile(
     all_urls.extend(discover_from_html_deep(html_main, base_url=seed.canonical_url))
 
     if also_fetch_activity:
-        act_url = f"https://www.linkedin.com/in/{vanity}/recent-activity/comments/"
+        act_url = f"https://www.linkedin.com/in/{vanity}/recent-activity/comments"
         try:
             html_act = await fetch_fn(act_url)
             all_urls.extend(discover_from_html_deep(html_act, base_url=act_url))
