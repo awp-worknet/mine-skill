@@ -67,7 +67,10 @@ def infer_platform_task(url: str) -> tuple[str, str, dict[str, str]]:
         arxiv_id = path.split("/abs/", 1)[1].strip("/")
         return "arxiv", "paper", {"arxiv_id": arxiv_id}
 
-    if host.endswith("www.linkedin.com"):
+    if host.endswith("www.linkedin.com") or host.endswith("linkedin.com"):
+        # Feed and listing pages — used as discovery seeds
+        if path.rstrip("/") in ("", "/feed"):
+            return "linkedin", "feed", {}
         linkedin_patterns = (
             (r"^/in/([^/]+)/?$", "profile", "public_identifier"),
             (r"^/company/([^/]+)/?$", "company", "company_slug"),
@@ -629,6 +632,10 @@ def _discovery_seed_urls(domain: str) -> list[str]:
     parsed = urlparse(seed_url)
     host = (parsed.netloc or parsed.path).lower()
     normalized_path = parsed.path.rstrip("/")
+    # LinkedIn: use the feed page (requires auth) to discover profiles/companies.
+    # The bare domain only shows a logged-out landing page with legal links.
+    if host in {"linkedin.com", "www.linkedin.com"} and normalized_path in {"", "/"}:
+        return [canonicalize_url("https://www.linkedin.com/feed/")]
     # Amazon: pick a random bestseller category to diversify across miners
     if (host.endswith(".amazon.com") or host == "amazon.com" or host.endswith(".amazon.co.uk") or host == "amazon.co.uk" or host.endswith(".amazon.de") or host == "amazon.de") and normalized_path in {"", "/"}:
         import random as _rnd
