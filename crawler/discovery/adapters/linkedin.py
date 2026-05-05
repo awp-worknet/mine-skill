@@ -96,7 +96,8 @@ class LinkedInDiscoveryAdapter(BaseDiscoveryAdapter):
                     search_candidates.append({"canonical_url": absolute.split("?")[0], "resource_type": "job"})
 
             for match in re.findall(r'https://www\.linkedin\.com/(company/[^"\']+|in/[^"\']+|jobs/view/\d+)', html):
-                canonical_url = f"https://www.linkedin.com/{match}".split("?")[0].rstrip("/")
+                # Strip trailing slashes and backslashes (LinkedIn HTML uses \/ escapes)
+                canonical_url = f"https://www.linkedin.com/{match}".split("?")[0].rstrip("/\\")
                 resource_type = "company" if match.startswith("company/") else "profile" if match.startswith("in/") else "job"
                 search_candidates.append({"canonical_url": canonical_url, "resource_type": resource_type})
 
