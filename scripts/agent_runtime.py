@@ -86,12 +86,37 @@ class CrawlerRunner:
     # Cached openclaw CLI availability — PATH doesn't change mid-run.
     _openclaw_available: bool | None = None
 
+    # Per-platform cookie files saved by scripts/linkedin_login.py (and
+    # equivalent helpers for future platforms). Injected as --cookies so the
+    # crawler imports them into its per-run session store. The MINE_<PLAT>_COOKIES
+    # env var overrides the default path.
+    _COOKIE_FILES = {
+        "linkedin": Path.home() / ".openclaw" / "mine-skill" / "cookies" / "linkedin.json",
+    }
+
+    def _resolve_cookies_path(self, item: WorkItem) -> Path | None:
+        platform = (item.platform or "").lower()
+        if not platform:
+            url = (item.url or "").lower()
+            if "linkedin.com" in url:
+                platform = "linkedin"
+        if not platform:
+            return None
+        env_override = os.environ.get(f"MINE_{platform.upper()}_COOKIES")
+        candidate = Path(env_override).expanduser() if env_override else self._COOKIE_FILES.get(platform)
+        if candidate and candidate.exists():
+            return candidate
+        return None
+
     def run_item(self, item: WorkItem, command: str) -> CrawlerRunResult:
         output_dir = resolve_item_output_dir(item, output_root=self.output_root)
         output_dir.mkdir(parents=True, exist_ok=True)
         input_path = output_dir / "task-input.jsonl"
         input_path.write_text(json.dumps(item.record, ensure_ascii=False) + "\n", encoding="utf-8")
         argv = [self.config.python_bin, "-m", "crawler", command, "--input", str(input_path), "--output", str(output_dir), "--auto-login"]
+        cookies_path = self._resolve_cookies_path(item)
+        if cookies_path is not None:
+            argv.extend(["--cookies", str(cookies_path)])
         self._append_enrich_argv(argv, command=command, output_dir=output_dir)
         if item.resume:
             argv.append("--resume")
