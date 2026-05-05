@@ -107,7 +107,7 @@ async def _run_discovery_crawl_pipeline_async(config: CrawlerConfig) -> tuple[li
             last_exc: Exception | None = None
             for fetch_attempt in range(2):
                 try:
-                    preferred_backend = getattr(adapter, "default_backend", None)
+                    preferred_backend = config.preferred_backend or getattr(adapter, "default_backend", None)
                     fallback_chain = getattr(adapter, "fallback_backends", ())
                     record = {
                         "platform": platform,
