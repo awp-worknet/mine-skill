@@ -96,11 +96,14 @@ class CrawlerRunner:
 
     def _resolve_cookies_path(self, item: WorkItem) -> Path | None:
         platform = (item.platform or "").lower()
-        if not platform:
-            url = (item.url or "").lower()
-            if "linkedin.com" in url:
-                platform = "linkedin"
-        if not platform:
+        # The worker tags discovery seeds as platform="generic" even for
+        # LinkedIn URLs — only sub-resources get the linkedin platform tag.
+        # Always sniff the URL so the seed itself also gets cookies.
+        url = (item.url or "").lower()
+        dataset_id = (getattr(item, "dataset_id", "") or "").lower()
+        if "linkedin.com" in url or dataset_id.startswith("ds_linkedin"):
+            platform = "linkedin"
+        if not platform or platform == "generic":
             return None
         env_override = os.environ.get(f"MINE_{platform.upper()}_COOKIES")
         candidate = Path(env_override).expanduser() if env_override else self._COOKIE_FILES.get(platform)
