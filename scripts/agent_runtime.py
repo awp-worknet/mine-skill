@@ -125,8 +125,15 @@ class CrawlerRunner:
             argv.append("--resume")
         if command == "discover-crawl":
             argv.extend(["--max-depth", str(self.config.discovery_max_depth), "--max-pages", str(self.config.discovery_max_pages)])
-        if self.default_backend:
-            argv.extend(["--preferred-backend", self.default_backend])
+        # The default http backend uses bare httpx with no cookie support, so
+        # any auth-walled site (e.g. LinkedIn) only sees the logged-out page.
+        # Force the playwright backend when we're injecting auth cookies so
+        # the seed actually loads as the authenticated user.
+        preferred_backend = self.default_backend
+        if cookies_path is not None and not preferred_backend:
+            preferred_backend = "playwright"
+        if preferred_backend:
+            argv.extend(["--preferred-backend", preferred_backend])
         # repeat_crawl = fetch+extract only (no enrich), so use a short timeout
         timeout = (
             self.REPEAT_CRAWL_TIMEOUT
