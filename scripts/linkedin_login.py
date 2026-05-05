@@ -20,6 +20,19 @@ from playwright.sync_api import sync_playwright
 # via `python -m crawler ... --cookies <path>`. This path persists across
 # per-task output dirs, so a single login covers many runs.
 DEFAULT_OUTPUT = Path.home() / ".openclaw" / "mine-skill" / "cookies" / "linkedin.json"
+
+
+def _broaden_linkedin_cookie_domains(path: Path) -> int:
+    import json
+    data = json.loads(path.read_text(encoding="utf-8"))
+    fixed = 0
+    for cookie in data.get("cookies", []):
+        domain = (cookie.get("domain") or "").lower()
+        if domain in {".www.linkedin.com", "www.linkedin.com"}:
+            cookie["domain"] = ".linkedin.com"
+            fixed += 1
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    return fixed
 LOGIN_URL = "https://www.linkedin.com/login"
 SUCCESS_HOST_PATHS = ("/feed", "/in/", "/mynetwork", "/jobs")
 
@@ -85,10 +98,16 @@ def main() -> int:
             return 2
 
         context.storage_state(path=str(output))
+        # Playwright stores LinkedIn auth cookies (li_at, JSESSIONID, …) on
+        # `.www.linkedin.com`. The miner often crawls the bare `linkedin.com`
+        # domain too, where those cookies would not be sent. Rewrite to
+        # `.linkedin.com` so they cover both apex and subdomains.
+        _broaden_linkedin_cookie_domains(output)
         for extra in args.also_write:
             extra_path = extra.expanduser().resolve()
             extra_path.parent.mkdir(parents=True, exist_ok=True)
             context.storage_state(path=str(extra_path))
+            _broaden_linkedin_cookie_domains(extra_path)
             print(f"[login] also wrote: {extra_path}")
 
         print(f"[login] OK — storage_state saved with li_at cookie")
