@@ -22,7 +22,15 @@ def fetch_with_playwright(url: str, storage_state_path: str | None = None) -> di
                 context = browser.new_context(storage_state=storage_state)
                 try:
                     page = context.new_page()
-                    page.goto(url, wait_until="networkidle")
+                    # Use domcontentloaded instead of networkidle — many SPAs
+                    # (LinkedIn, etc.) keep long-polling connections that never
+                    # settle, causing networkidle to hang indefinitely.
+                    page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+                    # Brief pause for JS frameworks to hydrate initial content.
+                    try:
+                        page.wait_for_timeout(2_000)
+                    except Exception:
+                        pass
                     html = page.content()
                     screenshot = page.screenshot(type="png")
                     if storage_state_path is not None:
