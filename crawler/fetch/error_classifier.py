@@ -38,6 +38,16 @@ def classify_http_error(exc: Exception) -> FetchError:
         if code == 429:
             return FetchError("RATE_LIMITED", "wait_and_retry",
                               "Rate limit hit", True, code)
+        if code == 999:
+            # LinkedIn's anti-bot signature response. Treat like a captcha so
+            # the orchestrator escalates to a browser backend and refreshes auth.
+            return FetchError(
+                "CAPTCHA",
+                "escalate_backend",
+                "LinkedIn anti-bot challenge (HTTP 999)",
+                True,
+                code,
+            )
         if code in (401, 403):
             return FetchError("AUTH_EXPIRED", "refresh_session",
                               f"Auth failed ({code})", True, code)
