@@ -37,6 +37,37 @@ def inject_skill_root() -> Path:
 inject_skill_root()
 
 
+def _load_dotenv_from_skill_root() -> None:
+    """Load .env from the skill root so CHROME_BIN, PYTHONIOENCODING etc. are
+    available to every subprocess (worker → crawler → vrd → agent-browser).
+    Existing env vars take precedence (override=False)."""
+    env_path = SKILL_ROOT / ".env"
+    if not env_path.exists():
+        return
+    try:
+        from dotenv import load_dotenv  # type: ignore
+        load_dotenv(env_path, override=False)
+        return
+    except ImportError:
+        pass
+    # Fallback: minimal manual parser if python-dotenv missing
+    try:
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, _, value = stripped.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+    except Exception:
+        pass
+
+
+_load_dotenv_from_skill_root()
+
+
 def _ensure_local_venv_python() -> None:
     if os.environ.get("MINE_SKIP_VENV_REEXEC") == "1":
         return

@@ -87,6 +87,41 @@ DECORATION_IDS = {
     "company_main": "com.linkedin.voyager.deco.organization.web.WebFullCompanyMain-12",
 }
 
+# LinkedIn rejects Voyager API calls when `x-li-page-instance` does not match
+# the resource type — the response comes back as a captcha challenge or HTTP 999.
+# Map each resource_type to the page key voyager-web actually emits in browsers.
+_PAGE_INSTANCE_BY_RESOURCE = {
+    "profile": "d_flagship3_profile_view_base",
+    "company": "d_flagship3_company",
+    "job": "d_flagship3_job_details",
+    "search": "d_flagship3_search_srp_top",
+    "post": "d_flagship3_feed",
+}
+_DEFAULT_PAGE_INSTANCE = "d_flagship3_profile_view_base"
+
+
+def _resolve_page_instance(
+    record: dict[str, Any] | None,
+    discovered: dict[str, Any] | None,
+) -> str:
+    resource_type = ""
+    if record:
+        resource_type = str(record.get("resource_type") or "").lower()
+    if not resource_type and discovered:
+        url = str(discovered.get("canonical_url") or "").lower()
+        if "/in/" in url:
+            resource_type = "profile"
+        elif "/company/" in url:
+            resource_type = "company"
+        elif "/jobs/" in url:
+            resource_type = "job"
+        elif "/search/" in url:
+            resource_type = "search"
+        elif "/feed/" in url or "/posts/" in url:
+            resource_type = "post"
+    page_key = _PAGE_INSTANCE_BY_RESOURCE.get(resource_type, _DEFAULT_PAGE_INSTANCE)
+    return f"urn:li:page:{page_key};{uuid4()}"
+
 
 def _load_cookie_map(storage_state_path: str | None) -> dict[str, str]:
     if storage_state_path is None:
@@ -133,7 +168,7 @@ def _storage_state_headers(
             },
             separators=(",", ":"),
         ),
-        "x-li-page-instance": f"urn:li:page:d_flagship3_profile_view_base;{uuid4()}",
+        "x-li-page-instance": _resolve_page_instance(record, discovered),
     }
     if cookie_map:
         headers["Cookie"] = "; ".join(f"{key}={value}" for key, value in cookie_map.items())
@@ -151,11 +186,12 @@ def _fetch_linkedin_json(
     storage_state_path: str | None,
     discovered: dict[str, Any],
     extra_headers: dict[str, str] | None = None,
+    record: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return fetch_api_get(
         canonical_url=canonical_url,
         api_endpoint=endpoint,
-        headers=_storage_state_headers(storage_state_path, None, discovered, extra_headers=extra_headers),
+        headers=_storage_state_headers(storage_state_path, record, discovered, extra_headers=extra_headers),
     )
 
 
@@ -164,13 +200,14 @@ def _fetch_linkedin_html(
     canonical_url: str,
     storage_state_path: str | None,
     discovered: dict[str, Any],
+    record: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return fetch_api_get(
         canonical_url=canonical_url,
         api_endpoint=canonical_url,
         headers=_storage_state_headers(
             storage_state_path,
-            None,
+            record,
             discovered,
             extra_headers={"accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"},
         ),
@@ -248,6 +285,7 @@ def _fetch_linkedin_api(record: dict, discovered: dict, storage_state_path: str 
             canonical_url=canonical_url,
             storage_state_path=storage_state_path,
             discovered=discovered,
+            record=record,
         )
     if resource_type == "profile":
         try:
@@ -256,12 +294,14 @@ def _fetch_linkedin_api(record: dict, discovered: dict, storage_state_path: str 
                 endpoint=_build_profile_lookup_endpoint(record.get("public_identifier") or ""),
                 storage_state_path=storage_state_path,
                 discovered=discovered,
+                record=record,
             )
             try:
                 html_response = _fetch_linkedin_html(
                     canonical_url=canonical_url,
                     storage_state_path=storage_state_path,
                     discovered=discovered,
+                    record=record,
                 )
                 response["html_fallback_text"] = html_response.get("text")
                 response["html_fallback_content_type"] = html_response.get("content_type")
@@ -275,6 +315,7 @@ def _fetch_linkedin_api(record: dict, discovered: dict, storage_state_path: str 
                 canonical_url=canonical_url,
                 storage_state_path=storage_state_path,
                 discovered=discovered,
+                record=record,
             )
             html_response["html_fallback_text"] = html_response.get("text")
             html_response["html_fallback_content_type"] = html_response.get("content_type")
@@ -286,12 +327,14 @@ def _fetch_linkedin_api(record: dict, discovered: dict, storage_state_path: str 
                 endpoint=_build_company_lookup_endpoint(record.get("company_slug") or ""),
                 storage_state_path=storage_state_path,
                 discovered=discovered,
+                record=record,
             )
             try:
                 html_response = _fetch_linkedin_html(
                     canonical_url=canonical_url,
                     storage_state_path=storage_state_path,
                     discovered=discovered,
+                    record=record,
                 )
                 response["html_fallback_text"] = html_response.get("text")
                 response["html_fallback_content_type"] = html_response.get("content_type")
@@ -305,6 +348,7 @@ def _fetch_linkedin_api(record: dict, discovered: dict, storage_state_path: str 
                 canonical_url=canonical_url,
                 storage_state_path=storage_state_path,
                 discovered=discovered,
+                record=record,
             )
             html_response["html_fallback_text"] = html_response.get("text")
             html_response["html_fallback_content_type"] = html_response.get("content_type")
@@ -314,12 +358,14 @@ def _fetch_linkedin_api(record: dict, discovered: dict, storage_state_path: str 
         endpoint=_build_linkedin_endpoint(record),
         storage_state_path=storage_state_path,
         discovered=discovered,
+        record=record,
     )
     if resource_type == "job" and _linkedin_job_payload_missing(response.get("json_data") or {}):
         html_response = _fetch_linkedin_html(
             canonical_url=canonical_url,
             storage_state_path=storage_state_path,
             discovered=discovered,
+            record=record,
         )
         response["html_fallback_text"] = html_response.get("text")
         response["html_fallback_content_type"] = html_response.get("content_type")

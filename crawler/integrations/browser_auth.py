@@ -259,9 +259,20 @@ class AutoBrowserAuthBridge:
         "DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
         "TMPDIR", "TMP", "TEMP",
         # Python/Node
-        "PYTHONPATH", "VIRTUAL_ENV", "NODE_PATH", "NVM_DIR",
+        "PYTHONPATH", "PYTHONIOENCODING", "PYTHONUTF8",
+        "VIRTUAL_ENV", "NODE_PATH", "NVM_DIR",
         # Project-specific
         "WORKDIR", "GEOM", "DEPTH", "DISPLAY_NUM",
+        # Browser override (Brave / Edge / Chromium / etc.)
+        "CHROME_BIN", "CHROME_PIN_DIR",
+        "AGENT_BROWSER_EXECUTABLE_PATH", "AGENT_BROWSER_PROFILE",
+        "AGENT_BROWSER_SESSION", "AGENT_BROWSER_ARGS",
+        # Windows-required (asyncio/Winsock fail without SYSTEMROOT, npm/node need APPDATA, etc.)
+        "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT",
+        "USERPROFILE", "USERNAME", "USERDOMAIN", "COMPUTERNAME",
+        "APPDATA", "LOCALAPPDATA", "PROGRAMDATA",
+        "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432", "COMMONPROGRAMFILES",
+        "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS", "OS",
     }
 
     def _base_env(self, extra: dict[str, str] | None = None) -> dict[str, str]:

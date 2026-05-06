@@ -36,10 +36,12 @@ def canonicalize_url(url: str) -> str:
         clean_path = _re.sub(r"v\d+/?$", "", "/" + path.strip("/"))
         return urlunsplit(("https", "arxiv.org", clean_path, "", ""))
     if host == "www.linkedin.com":
-        normalized = "/" + path.strip("/")
-        if normalized.startswith(("/in/", "/company/")) and not normalized.endswith("/"):
-            normalized += "/"
-        return urlunsplit(("https", "www.linkedin.com", normalized or "/", "", ""))
+        # NOTE: dataset url_patterns regex `^https://(?:www\.)?linkedin\.com/company/[^/?#]+`
+        # is matched with re.fullmatch — a trailing slash makes the preflight reject the
+        # submission. So we strip the trailing slash here (LinkedIn server still serves
+        # both forms identically and 301-redirects /company/X -> /company/X/ in browsers).
+        normalized = "/" + path.strip("/") if path.strip("/") else "/"
+        return urlunsplit(("https", "www.linkedin.com", normalized, "", ""))
     # Amazon: normalize all regional domains to canonical /dp/ASIN form
     amazon_hosts = ("www.amazon.com", "www.amazon.co.uk", "www.amazon.de",
                     "www.amazon.fr", "www.amazon.it", "www.amazon.es",

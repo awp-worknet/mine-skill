@@ -409,6 +409,37 @@ class DatasetDiscoverySource:
                     # Always skip Main_Page fallback — same retry loop risk as arXiv listings
                     continue
 
+                # LinkedIn: skip homepage discover-crawl (it triggers CAPTCHA and
+                # produces 0 followups). Instead emit canonical /company/<slug>/
+                # URLs from the curated slug list and let the platform fetch the
+                # Voyager company-lookup API directly with the active session cookie.
+                if host == "linkedin.com" or host.endswith(".linkedin.com"):
+                    # 4 URLs/iter stays well under LinkedIn's 6 req/min limit
+                    # (rate_limits.json) with headroom for retries.
+                    for url in _linkedin_company_seed_urls(count=4):
+                        platform, resource_type, inferred_fields = infer_platform_task(url)
+                        record = {
+                            "canonical_url": url,
+                            "url": url,
+                            "platform": platform,
+                            "resource_type": resource_type,
+                        }
+                        record.update(inferred_fields)
+                        items.append(
+                            WorkItem(
+                                item_id=f"discovery:{dataset_id}:{url}",
+                                source="dataset_discovery",
+                                url=url,
+                                dataset_id=dataset_id,
+                                platform=platform,
+                                resource_type=resource_type,
+                                record=record,
+                                crawler_command="run",
+                                metadata={"dataset": dataset, "source_domain": domain},
+                            )
+                        )
+                    continue
+
                 for seed_url in _discovery_seed_urls(domain):
                     platform, resource_type, _ = infer_platform_task(seed_url)
                     items.append(
@@ -618,6 +649,51 @@ def _wikipedia_random_articles(wiki_host: str, count: int = 10) -> list[str]:
         return urls
     except Exception:
         return []
+
+
+_LINKEDIN_COMPANY_SLUGS: tuple[str, ...] = (
+    # Big Tech
+    "microsoft", "google", "apple", "amazon", "meta", "netflix", "nvidia",
+    "ibm", "oracle", "intel", "cisco", "sap", "adobe", "salesforce",
+    "openai", "anthropicai", "github", "gitlab", "atlassian", "dropbox",
+    "stripe", "shopify", "spotify", "airbnb", "pinterest", "snap-inc",
+    "uber-com", "doordash", "block-inc", "coinbase",
+    # Consulting / Finance
+    "mckinsey", "deloitte", "accenture", "pwc", "bain-and-company", "bcg",
+    "goldman-sachs", "jpmorgan-chase", "morgan-stanley", "hsbc",
+    # Retail / Consumer
+    "walmart", "target", "costco", "nike", "starbucks", "lululemon",
+    # Industrial / Auto
+    "ford-motor-company", "toyota", "boeing", "lockheed-martin",
+    # Healthcare / Pharma
+    "pfizer", "johnson-and-johnson", "moderna", "merck-&-co.-inc.",
+    # Energy
+    "exxonmobil", "chevron", "shell",
+    # Media / Entertainment
+    "the-walt-disney-company", "warnermedia",
+    # CPG
+    "unilever", "nestle-s-a-", "the-coca-cola-company", "pepsico",
+    # Hardware
+    "samsung-electronics", "sony", "lg",
+    # Aerospace / Public
+    "nasa", "spacex",
+)
+
+
+def _linkedin_company_seed_urls(count: int = 8) -> list[str]:
+    """Pick N random LinkedIn company URLs from a curated public-slug list.
+
+    These bypass the homepage CAPTCHA path: each URL goes straight to the Voyager
+    company-lookup API (resource_type=company, command=run).
+    """
+    import random as _rnd
+    pool = list(_LINKEDIN_COMPANY_SLUGS)
+    _rnd.shuffle(pool)
+    chosen = pool[: max(1, min(count, len(pool)))]
+    # NOTE: NO trailing slash. Dataset url_patterns regex
+    # `^https://(?:www\.)?linkedin\.com/company/[^/?#]+` is used with re.fullmatch,
+    # so a trailing `/` causes the preflight to reject the submission.
+    return [f"https://www.linkedin.com/company/{slug}" for slug in chosen]
 
 
 def _discovery_seed_urls(domain: str) -> list[str]:
