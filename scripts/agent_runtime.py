@@ -623,7 +623,9 @@ class AgentWorker:
                     return f"stopped after {iteration} iterations"
                 if not summary["processed_items"] and not summary["discovery_items"] and not summary["claimed_items"] and not summary["resumed_items"]:
                     consecutive_empty += 1
-                    wait = min(interval * (2 ** min(consecutive_empty, 3)), 300)
+                    # Cap backoff at 60s (was 300s) — when the platform is flaky,
+                    # 5-min sleeps make us miss its brief recovery windows.
+                    wait = min(interval * (2 ** min(consecutive_empty, 3)), 60)
                 else:
                     consecutive_empty = 0
                     wait = interval
@@ -636,7 +638,8 @@ class AgentWorker:
                 print(f"[worker] iteration {iteration} error: {e}")
                 # Don't reset consecutive_empty — let back-off accumulate on errors
                 consecutive_empty += 1
-                wait = min(interval * (2 ** min(consecutive_empty, 4)), 300)
+                # Cap error backoff at 60s too (was 300s) for the same reason.
+                wait = min(interval * (2 ** min(consecutive_empty, 4)), 60)
                 self.state_store.save_session({"last_wait_seconds": wait})
 
             if max_iterations != 0 and iteration >= max_iterations:
@@ -705,7 +708,9 @@ class AgentWorker:
             # (long sleeps are logged before they start).
             if not processed and not discovered and not claimed and not resumed:
                 consecutive_empty += 1
-                wait = min(interval * (2 ** min(consecutive_empty, 3)), 300)
+                # Cap backoff at 60s (was 300s) — when the platform is flaky,
+                # 5-min sleeps make us miss its brief recovery windows.
+                wait = min(interval * (2 ** min(consecutive_empty, 3)), 60)
             else:
                 consecutive_empty = 0
                 wait = interval
