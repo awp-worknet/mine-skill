@@ -38,6 +38,16 @@ def classify_http_error(exc: Exception) -> FetchError:
         if code == 429:
             return FetchError("RATE_LIMITED", "wait_and_retry",
                               "Rate limit hit", True, code)
+        if code == 999:
+            # LinkedIn's anti-bot signature response. Treat like a captcha so
+            # the orchestrator escalates to a browser backend and refreshes auth.
+            return FetchError(
+                "CAPTCHA",
+                "escalate_backend",
+                "LinkedIn anti-bot challenge (HTTP 999)",
+                True,
+                code,
+            )
         if code in (401, 403):
             return FetchError("AUTH_EXPIRED", "refresh_session",
                               f"Auth failed ({code})", True, code)
@@ -96,7 +106,7 @@ def classify_content(html: str | None, final_url: str) -> FetchError | None:
         return FetchError("AUTH_EXPIRED", "refresh_session",
                           "Hit auth wall or login redirect", True)
 
-    if re.search(r"captcha|robot check", lower):
+    if _looks_like_captcha_page(lower, lower_final_url):
         return FetchError("CAPTCHA", "escalate_backend",
                           "Captcha or robot check detected — will try next backend", True)
 
@@ -112,6 +122,27 @@ def classify_content(html: str | None, final_url: str) -> FetchError | None:
                           "Amazon product page returned a shell page without product details", True)
 
     return None
+
+
+def _looks_like_captcha_page(lower_html: str, lower_final_url: str) -> bool:
+    # URL-level signals are unambiguous.
+    if "/checkpoint/challenge" in lower_final_url:
+        return True
+    if "/captcha" in lower_final_url:
+        return True
+    # Mask out reCAPTCHA library references — logged-in pages (e.g. LinkedIn
+    # /feed) embed reCAPTCHA v3 config but are not challenge pages themselves.
+    masked = re.sub(r"recaptcha[a-z0-9_-]*", " ", lower_html)
+    challenge_signals = (
+        r"\bcaptcha\s+(?:challenge|required|verification)\b",
+        r"\bplease\s+complete\s+the\s+captcha\b",
+        r"\bsolve\s+(?:the\s+)?captcha\b",
+        r"\b(?:are|prove)\s+you\s+(?:a\s+)?(?:human|robot)\b",
+        r"\brobot\s+check\b",
+        r"<title>[^<]*(?:security verification|captcha|are you a human)",
+        r"data-(?:captcha|challenge)-",
+    )
+    return any(re.search(pat, masked) for pat in challenge_signals)
 
 
 def _looks_like_amazon_product_shell(lower_html: str, final_url: str) -> bool:

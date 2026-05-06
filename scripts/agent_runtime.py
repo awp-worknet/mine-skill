@@ -86,19 +86,59 @@ class CrawlerRunner:
     # Cached openclaw CLI availability — PATH doesn't change mid-run.
     _openclaw_available: bool | None = None
 
+    # Per-platform cookie files saved by scripts/linkedin_login.py (and
+    # equivalent helpers for future platforms). Injected as --cookies so the
+    # crawler imports them into its per-run session store. The MINE_<PLAT>_COOKIES
+    # env var overrides the default path.
+    _COOKIE_FILES = {
+        "linkedin": Path.home() / ".openclaw" / "mine-skill" / "cookies" / "linkedin.json",
+    }
+
+    def _resolve_cookies_path(self, item: WorkItem) -> Path | None:
+        platform = (item.platform or "").lower()
+        # The worker tags discovery seeds as platform="generic" even for
+        # LinkedIn URLs — only sub-resources get the linkedin platform tag.
+        # Always sniff the URL so the seed itself also gets cookies.
+        url = (item.url or "").lower()
+        dataset_id = (getattr(item, "dataset_id", "") or "").lower()
+        if "linkedin.com" in url or dataset_id.startswith("ds_linkedin"):
+            platform = "linkedin"
+        if not platform or platform == "generic":
+            return None
+        env_override = os.environ.get(f"MINE_{platform.upper()}_COOKIES")
+        candidate = Path(env_override).expanduser() if env_override else self._COOKIE_FILES.get(platform)
+        if candidate and candidate.exists():
+            return candidate
+        return None
+
     def run_item(self, item: WorkItem, command: str) -> CrawlerRunResult:
         output_dir = resolve_item_output_dir(item, output_root=self.output_root)
         output_dir.mkdir(parents=True, exist_ok=True)
         input_path = output_dir / "task-input.jsonl"
         input_path.write_text(json.dumps(item.record, ensure_ascii=False) + "\n", encoding="utf-8")
         argv = [self.config.python_bin, "-m", "crawler", command, "--input", str(input_path), "--output", str(output_dir), "--auto-login"]
+        cookies_path = self._resolve_cookies_path(item)
+        logging.getLogger("agent.worker").info(
+            "[debug] item.platform=%r item.url=%r dataset_id=%r resolved_cookies=%r",
+            getattr(item, "platform", None), getattr(item, "url", None),
+            getattr(item, "dataset_id", None), str(cookies_path) if cookies_path else None,
+        )
+        if cookies_path is not None:
+            argv.extend(["--cookies", str(cookies_path)])
         self._append_enrich_argv(argv, command=command, output_dir=output_dir)
         if item.resume:
             argv.append("--resume")
         if command == "discover-crawl":
             argv.extend(["--max-depth", str(self.config.discovery_max_depth), "--max-pages", str(self.config.discovery_max_pages)])
-        if self.default_backend:
-            argv.extend(["--preferred-backend", self.default_backend])
+        # The default http backend uses bare httpx with no cookie support, so
+        # any auth-walled site (e.g. LinkedIn) only sees the logged-out page.
+        # Force the playwright backend when we're injecting auth cookies so
+        # the seed actually loads as the authenticated user.
+        preferred_backend = self.default_backend
+        if cookies_path is not None and not preferred_backend:
+            preferred_backend = "playwright"
+        if preferred_backend:
+            argv.extend(["--preferred-backend", preferred_backend])
         # repeat_crawl = fetch+extract only (no enrich), so use a short timeout
         timeout = (
             self.REPEAT_CRAWL_TIMEOUT

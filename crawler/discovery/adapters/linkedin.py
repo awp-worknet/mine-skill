@@ -89,17 +89,16 @@ class LinkedInDiscoveryAdapter(BaseDiscoveryAdapter):
                 href = str(anchor.get("href") or "")
                 absolute = urljoin(seed.canonical_url, href)
                 if "/company/" in absolute:
-                    search_candidates.append({"canonical_url": absolute.rstrip("/").split("?")[0] + "/", "resource_type": "company"})
+                    search_candidates.append({"canonical_url": absolute.split("?")[0].rstrip("/"), "resource_type": "company"})
                 elif "/in/" in absolute:
-                    search_candidates.append({"canonical_url": absolute.rstrip("/").split("?")[0] + "/", "resource_type": "profile"})
+                    search_candidates.append({"canonical_url": absolute.split("?")[0].rstrip("/"), "resource_type": "profile"})
                 elif "/jobs/view/" in absolute:
                     search_candidates.append({"canonical_url": absolute.split("?")[0], "resource_type": "job"})
 
             for match in re.findall(r'https://www\.linkedin\.com/(company/[^"\']+|in/[^"\']+|jobs/view/\d+)', html):
-                canonical_url = f"https://www.linkedin.com/{match}".split("?")[0]
+                # Strip trailing slashes and backslashes (LinkedIn HTML uses \/ escapes)
+                canonical_url = f"https://www.linkedin.com/{match}".split("?")[0].rstrip("/\\")
                 resource_type = "company" if match.startswith("company/") else "profile" if match.startswith("in/") else "job"
-                if resource_type in {"company", "profile"} and not canonical_url.endswith("/"):
-                    canonical_url += "/"
                 search_candidates.append({"canonical_url": canonical_url, "resource_type": resource_type})
 
         # For now, delegate to search candidates if available
