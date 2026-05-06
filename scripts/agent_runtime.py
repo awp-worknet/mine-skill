@@ -118,6 +118,11 @@ class CrawlerRunner:
         input_path.write_text(json.dumps(item.record, ensure_ascii=False) + "\n", encoding="utf-8")
         argv = [self.config.python_bin, "-m", "crawler", command, "--input", str(input_path), "--output", str(output_dir), "--auto-login"]
         cookies_path = self._resolve_cookies_path(item)
+        logging.getLogger("agent.worker").info(
+            "[debug] item.platform=%r item.url=%r dataset_id=%r resolved_cookies=%r",
+            getattr(item, "platform", None), getattr(item, "url", None),
+            getattr(item, "dataset_id", None), str(cookies_path) if cookies_path else None,
+        )
         if cookies_path is not None:
             argv.extend(["--cookies", str(cookies_path)])
         self._append_enrich_argv(argv, command=command, output_dir=output_dir)
